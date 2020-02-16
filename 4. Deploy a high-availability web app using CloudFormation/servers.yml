@@ -144,3 +144,33 @@ Resources:
         - Fn::ImportValue: !Sub ${Environment}-PUB2-SN
       SecurityGroups:
         - !Ref LBSecGroup
+
+  S3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Permission for S3 access from our servers
+      AssumeRolePolicyDocument:
+        Statement: 
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action: 
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: s3
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: arn:aws:s3:::test-udagram-1
+
+  
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref S3Role
