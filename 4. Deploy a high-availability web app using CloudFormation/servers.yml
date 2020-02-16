@@ -1,0 +1,146 @@
+Description: >
+  Bolatan Ibrahim / High availability server deployed through CloudFormation
+
+Parameters:
+  Environment:
+    Description: Name of the environment that will be prefixed to all resources for easy identification.
+    Type: String
+  
+  InternetCIDR:
+    Description: IP range for the internet
+    Type: String
+    Default: 0.0.0.0/0
+  
+  AdminIP:
+    Description: IP address of the admin computer
+    Type: String
+    Default: 0.0.0.0/0
+
+
+
+
+Resources:
+  AppSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP and SSH access to our servers
+      VpcId: 
+        Fn::ImportValue: !Sub ${Environment}-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref InternetCIDR
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AdminIP
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: !Ref InternetCIDR
+
+
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP access to our app through LoadBalancer
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref InternetCIDR
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref InternetCIDR
+
+
+  AppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData: 
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+          apt update -y
+          apt install -y apache2
+          systemctl start apache2
+          systemctl enable apache2
+          rm ../../var/www/html/index.html
+          wget -P ../../var/www/html https://s3.us-east-2.amazonaws.com/test-udagram-1/index.html
+      ImageId: ami-005bdb005fb00e791
+      KeyName: ehbraheem-win
+      InstanceType: t3.medium
+      SecurityGroups:
+        - !Ref AppSecGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sdk
+          Ebs: 
+            VolumeSize: 10
+
+
+  AppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub ${Environment}-PRI-NETS
+      DesiredCapacity: 4
+      MinSize: 4
+      MaxSize: 7
+      LaunchConfigurationName: !Ref AppLaunchConfig
+      TargetGroupARNs:
+        - !Ref AppTargetGroup
+
+
+  AppLBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppTargetGroup
+      LoadBalancerArn: !Ref AppLB
+      Port: 80
+      Protocol: HTTP
+
+
+  AppLBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref AppTargetGroup
+      ListenerArn: !Ref AppLBListener
+      Priority: 1
+      Conditions:
+        - Field: path-pattern
+          Values: [/]
+
+
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-VPCID
+
+
+  AppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - Fn::ImportValue: !Sub ${Environment}-PUB1-SN
+        - Fn::ImportValue: !Sub ${Environment}-PUB2-SN
+      SecurityGroups:
+        - !Ref LBSecGroup
