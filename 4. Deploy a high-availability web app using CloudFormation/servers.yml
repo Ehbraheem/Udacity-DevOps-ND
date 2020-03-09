@@ -8,15 +8,54 @@ Parameters:
   
   InternetCIDR:
     Description: IP range for the internet
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
     Type: String
     Default: 0.0.0.0/0
   
   AdminIP:
     Description: IP address of the admin computer
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
     Type: String
+    MaxLength: 18
+    MinLength: 9
     Default: 0.0.0.0/0
+  
+  BucketName:
+    Description: S3 Bucket name where our static files resides
+    Type: String
+    AllowedPattern: '^[0-9a-zA-Z]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$'
+    Default: ehbraheem-static-site
+  
+  BucketRegion:
+    Description: Region where our S3 Bucket resides.
+    Type: String
+    AllowedPattern: '^[0-9a-zA-Z]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$'
+    Default: eu-west-3
+  
+  SiteArchive:
+    Description: Compressed archive of my static sile.
+    Type: String
+    AllowedPattern: '^[0-9a-zA-Z.]+([0-9a-zA-Z-]*[0-9a-zA-Z.])*$'
+    Default: ehbraheem-static-site.tar.gz
 
-
+  KeyPairName:
+    Description: Name of an existing AWS EC2 key-pair
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+  
+  BucketKeyPrefix:
+    AllowedPattern: '^[0-9a-zA-Z-/]*$'
+    ConstraintDescription: >-
+      Files key prefix can include numbers, lowercase letters, uppercase
+      letters, hyphens (-), and forward slash (/).
+    Default: '/'
+    Description: >-
+      S3 key prefix for the static site assets. Asset key prefix can
+      include numbers, lowercase letters, uppercase letters, hyphens (-), and
+      forward slash (/).
+    Type: String
 
 
 Resources:
@@ -62,19 +101,75 @@ Resources:
 
   AppLaunchConfig:
     Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+        AWS::CloudFormation::Authentication:
+          S3AcessCreds:
+            type: S3
+            buckets:
+              - !Ref BucketName
+            roleName: !Ref S3Role
+        AWS::CloudFormation::Init:
+          configSets:
+            setup:
+              - setup_apache
+              - download_site
+          download_site:
+            files:
+              /var/www/html/site.tar.gz:
+                source: !Join [ "", [ "https://", !Ref BucketName, '.s3.', !Ref BucketRegion, ".amazonaws.com", !Ref BucketKeyPrefix, !Ref SiteArchive ]]
+                # mode: 00400
+                # owner: apache
+                # group: apache
+                authentication: S3AcessCreds
+            commands:
+              extract_site:
+                command: tar xfz /var/www/html/site.tar.gz --strip-components=1 -C /var/www/html/
+          
+          setup_apache:
+            packages:
+              apt:
+                apache2: []
+            commands:
+              start_apache:
+                command: systemctl start apache2
+              enable_apache:
+                command: systemctl enable apache2
+
     Properties:
+      IamInstanceProfile: !Ref AppInstanceProfile
       UserData: 
         Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-          apt update -y
-          apt install -y apache2
-          systemctl start apache2
-          systemctl enable apache2
-          rm ../../var/www/html/index.html
-          wget -P ../../var/www/html https://s3.us-east-2.amazonaws.com/test-udagram-1/index.html
-      ImageId: ami-005bdb005fb00e791
-      KeyName: ehbraheem-win
+          #!/bin/bash -x
+          #CFN Functions
+          function cfn_fail
+          {
+            cfn-signal -e 1 --stack ${AWS::StackName} --region ${AWS::Region} --resource AppGroup
+            exit 1
+          }
+          function cfn_success
+          {
+            cfn-signal -e 0 --stack ${AWS::StackName} --region ${AWS::Region} --resource AppGroup
+            exit 0
+          }
+          S3URI=https://${BucketName}.${BucketRegion}.amazonaws.com/${BucketKeyPrefix}
+          apt-get -y update
+          # Install git
+          apt-get install -y git 
+          #Load Linux utils
+          until git clone https://github.com/aws-quickstart/quickstart-linux-utilities.git ; do echo "Retrying"; done
+          cd /quickstart-linux-utilities && source quickstart-cfn-tools.source
+          # Prep operating systems
+          qs_update-os || qs_err
+          qs_bootstrap_pip || qs_err
+          qs_aws-cfn-bootstrap || qs_err
+          echo "[INFO] Setting up our static site";
+          cfn-init -v --stack ${AWS::StackName} --resource AppLaunchConfig --configsets setup --region ${AWS::Region} || cfn_fail
+          # Signal cfn-init (final check)
+          # [ $(qs_status) == 0 ] && cfn_success || cfn_fail [' -f /var/tmp/stack_failed ']'
+          cfn_success
+
+      ImageId: ami-0edf3b95e26a682df
+      KeyName: !Ref KeyPairName
       InstanceType: t3.medium
       SecurityGroups:
         - !Ref AppSecGroup
@@ -82,6 +177,7 @@ Resources:
         - DeviceName: /dev/sdk
           Ebs: 
             VolumeSize: 10
+
 
 
   AppGroup:
@@ -95,6 +191,22 @@ Resources:
       LaunchConfigurationName: !Ref AppLaunchConfig
       TargetGroupARNs:
         - !Ref AppTargetGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: 4
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 3
+        PauseTime: PT10S
+        WaitOnResourceSignals: true
+        SuspendProcesses:
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AZRebalance
+          - AlarmNotification
+          - ScheduledActions
 
 
   AppLBListener:
@@ -157,19 +269,20 @@ Resources:
                 - ec2.amazonaws.com
             Action: 
               - sts:AssumeRole
+            Sid: ''
       Policies:
-        - PolicyName: s3
+        - PolicyName: AuthenticatedS3GetObjects
           PolicyDocument:
+            Version: 2012-10-17
             Statement:
               - Effect: Allow
                 Action: 
-                  - s3:ListBucket
                   - s3:GetObject
-                  - s3:PutObject
-                Resource: arn:aws:s3:::test-udagram-1
+                Resource:
+                  - !Sub 'arn:aws:s3:::${BucketName}${BucketKeyPrefix}*'
 
   
-  EC2InstanceProfile:
+  AppInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles:

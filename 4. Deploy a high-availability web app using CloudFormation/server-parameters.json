@@ -2,5 +2,25 @@
   {
     "ParameterKey": "Environment",
     "ParameterValue": "EhbraheemStack"
+  },
+  {
+    "ParameterKey": "AdminIP",
+    "ParameterValue": "0.0.0.0/0"
+  },
+  {
+    "ParameterKey": "BucketName",
+    "ParameterValue": "ehbraheem-static-site"
+  },
+  {
+    "ParameterKey": "BucketRegion",
+    "ParameterValue": "eu-west-3"
+  },
+  {
+    "ParameterKey": "SiteArchive",
+    "ParameterValue": "ehbraheem-static-site.tar.gz"
+  },
+  {
+    "ParameterKey": "KeyPairName",
+    "ParameterValue": "ehbraheem-win"
   }
 ]
