@@ -402,7 +402,7 @@ Resources:
     Properties: 
       DisplayName: !Sub ${Environment}-Warning
       Subscription: 
-        - Endpoint: !Sub '${AdminEmail}'
+        - Endpoint: !Ref AdminEmail
           Protocol: email
         - Endpoint: !GetAtt ServerQueue.Arn
           Protocol: sqs
@@ -413,7 +413,7 @@ Resources:
     Properties: 
       DisplayName: !Sub ${Environment}-Error
       Subscription: 
-        - Endpoint: !Sub '${AdminPhone}'
+        - Endpoint: !Ref AdminPhone
           Protocol: sms
       TopicName: !Sub ${Environment}-Error
 
