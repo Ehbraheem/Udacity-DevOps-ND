@@ -56,7 +56,42 @@ Parameters:
       include numbers, lowercase letters, uppercase letters, hyphens (-), and
       forward slash (/).
     Type: String
+  
+  Volume:
+    Description: "Provide disk's/folder's name (ex.: xvda1)"
+    AllowedPattern: '^[0-9a-zA-Z.]+([0-9a-zA-Z-]*[0-9a-zA-Z.])*$'
+    Type: "String"
+    Default: "xvda1"
 
+  Path:
+    Description: "Filesystem Path"
+    AllowedPattern: '(?=(\/))\1[ .0-9a-zA-Z_-]*$'
+    Type: 'String'
+    Default: '/'
+
+  FS:
+    Description: "Filesystem type (fstype) - ext4 or xfs -> Ubuntu and AmazonLinux use ext4, CentOS use xfs"
+    Type: String
+    AllowedValues:
+      - ext4
+      - xfs
+      - btrfs
+    ConstraintDescription: You must specify ext4,xfs,or btrfs.
+    Default: ext4
+
+  AdminEmail:
+    Description: Email address of the admin
+    AllowedPattern: '^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$'
+    ConstraintDescription: must be a valid Email address of form NAME@DOMAIN.TLD
+    Type: String
+    MinLength: 7
+  
+  AdminPhone:
+    Description: Phone number of the admin
+    AllowedPattern: '^[+]*[(]{0,1}[0-9]{1,4}[)]{0,1}[-\s\.\/0-9]*$'
+    ConstraintDescription: must be a Phone number
+    Type: String
+    MinLength: 8
 
 Resources:
   AppSecGroup:
@@ -111,8 +146,10 @@ Resources:
         AWS::CloudFormation::Init:
           configSets:
             setup:
+              - configure_cfn
               - setup_apache
               - download_site
+              - install_cloudwatch_agent
           download_site:
             files:
               /var/www/html/site.tar.gz:
@@ -134,6 +171,65 @@ Resources:
                 command: systemctl start apache2
               enable_apache:
                 command: systemctl enable apache2
+          
+          install_cloudwatch_agent:
+            packages:
+              apt:
+                unzip: []
+            files:
+              /tmp/AmazonCloudWatchAgent.zip:
+                source: https://s3.amazonaws.com/amazoncloudwatch-agent/linux/amd64/latest/AmazonCloudWatchAgent.zip
+            commands:
+              extract_agent:
+                command: |
+                  cd /tmp
+                  unzip AmazonCloudWatchAgent.zip
+              install_agent:
+                command: |
+                  cd /tmp
+                  sudo ./install.sh
+
+          configure_cfn:
+            files:
+              /etc/cfn/cfn-hup.conf:
+                content: !Sub |
+                  [main]
+                  stack=${AWS::StackId}
+                  region=${AWS::Region}
+                  verbose=true
+                  interval=5
+                mode: "000400"
+                owner: root
+                group: root
+              /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+                content: !Sub |
+                  [cfn-auto-reloader-hook]
+                  triggers=post.update
+                  path=Resources.EC2.Metadata.AWS::CloudFormation::Init
+                  action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2 --configsets setup --region ${AWS::Region}
+                mode: "000400"
+                owner: root
+                group: root
+              /lib/systemd/system/cfn-hup.service:
+                content: !Sub |
+                  [Unit]
+                  Description=cfn-hup daemon
+                  
+                  [Service]
+                  Type=simple
+                  ExecStart=/opt/aws/bin/cfn-hup
+                  Restart=always
+                  
+                  [Install]
+                  WantedBy=multi-user.target
+                mode: "000400"
+                owner: root
+                group: root
+            commands:
+              01_enable_cfn-hup:
+                command: "systemctl enable cfn-hup.service"
+              02_start_cfn-hup:
+                command: "systemctl start cfn-hup.service"
 
     Properties:
       IamInstanceProfile: !Ref AppInstanceProfile
@@ -165,7 +261,8 @@ Resources:
           echo "[INFO] Setting up our static site";
           cfn-init -v --stack ${AWS::StackName} --resource AppLaunchConfig --configsets setup --region ${AWS::Region} || cfn_fail
           # Signal cfn-init (final check)
-          # [ $(qs_status) == 0 ] && cfn_success || cfn_fail [' -f /var/tmp/stack_failed ']'
+          qs_status;
+          # [ $(qs_status) == 0 ] && cfn_success || cfn_fail "signaled"
           cfn_success
 
       ImageId: ami-0edf3b95e26a682df
@@ -179,18 +276,22 @@ Resources:
             VolumeSize: 10
 
 
-
   AppGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier:
-        - Fn::ImportValue: !Sub ${Environment}-PRI-NETS
+        - Fn::ImportValue: !Sub ${Environment}-PUB-NETS
       DesiredCapacity: 4
       MinSize: 4
       MaxSize: 7
       LaunchConfigurationName: !Ref AppLaunchConfig
       TargetGroupARNs:
         - !Ref AppTargetGroup
+      MetricsCollection: 
+        - Granularity: 1Minute
+          Metrics: 
+            - GroupMinSize
+            - GroupMaxSize
     CreationPolicy:
       ResourceSignal:
         Count: 4
@@ -257,6 +358,7 @@ Resources:
       SecurityGroups:
         - !Ref LBSecGroup
 
+
   S3Role:
     Type: AWS::IAM::Role
     Properties:
@@ -287,3 +389,202 @@ Resources:
     Properties:
       Roles:
         - !Ref S3Role
+  
+  ServerQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      ReceiveMessageWaitTimeSeconds: 20
+      VisibilityTimeout: 60
+      QueueName: !Join [ '-', [ !Sub '${Environment}', 'Queue']]
+
+  Warning:
+    Type: AWS::SNS::Topic
+    Properties: 
+      DisplayName: !Sub ${Environment}-Warning
+      Subscription: 
+        - Endpoint: !Sub '${AdminEmail}'
+          Protocol: email
+        - Endpoint: !GetAtt ServerQueue.Arn
+          Protocol: sqs
+      TopicName: !Sub ${Environment}-Warning
+
+  Error:
+    Type: AWS::SNS::Topic
+    Properties: 
+      DisplayName: !Sub ${Environment}-Error
+      Subscription: 
+        - Endpoint: !Sub '${AdminPhone}'
+          Protocol: sms
+      TopicName: !Sub ${Environment}-Error
+
+  SNSToQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Id: PushMessageToSQSPolicy
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 
+              - sqs:SendMessage
+            Principal: 
+              AWS: '*'
+            Resource:
+              - !Ref Warning
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref Warning
+      Queues:
+        - !Ref ServerQueue
+           
+
+
+
+
+# ------------------- CloudWatch ----------------------#
+  CPUCriticalAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DeletionPolicy: Retain
+    DependsOn: AppGroup
+    Properties:
+      AlarmDescription: !Sub '${Environment} - High CPU Usage 95%'
+      AlarmActions:
+        - !Ref Error
+      OKActions:
+        - !Ref Error
+      EvaluationPeriods: 2
+      Threshold: 95
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Statistic: Average
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Period: 900
+     
+  
+  CPUWarningAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: AppGroup
+    DeletionPolicy: Retain
+    Properties:
+      AlarmDescription: !Sub '${Environment} - High CPU Usage 90%'
+      AlarmActions:
+        - !Ref Warning
+      OKActions:
+        - !Ref Warning
+      EvaluationPeriods: 1
+      Threshold: 90
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Statistic: Average
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Period: 900
+
+
+  MemoryCriticalAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: AppGroup
+    DeletionPolicy: Retain
+    Properties:
+      AlarmDescription: !Sub '${Environment} - High Memory Usage 95%'
+      AlarmActions:
+        - !Ref Error
+      OKActions:
+        - !Ref Error
+      EvaluationPeriods: 2
+      Threshold: 95
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      MetricName: mem_used_percent
+      Namespace: CWAgent
+      Period: 900
+      Statistic: Average
+
+  
+  MemoryWarningAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: AppGroup
+    DeletionPolicy: Retain
+    Properties:
+      AlarmDescription: !Sub '${Environment} - High Memory Usage 90%'
+      AlarmActions:
+        - !Ref Warning
+      OKActions:
+        - !Ref Warning
+      EvaluationPeriods: 1
+      Threshold: 90
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      MetricName: mem_used_percent
+      Namespace: CWAgent
+      Period: 900
+      Statistic: Average
+
+  
+  InstanceStatusCriticalAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: AppGroup
+    DeletionPolicy: Retain
+    Properties:
+      AlarmDescription: !Sub '${Environment} - Instance Status Check Failed - please investigate. Troubleshooting: https://goo.gl/Ea27Gd'
+      AlarmActions:
+        - !Ref Error
+      OKActions:
+        - !Ref Error
+      EvaluationPeriods: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: StatusCheckFailed_System
+      Namespace: AWS/EC2
+      Period: 60
+      Statistic: Minimum
+
+
+  DiskUsageWarningAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: AppGroup
+    DeletionPolicy: Retain
+    Properties:
+      AlarmDescription: !Sub '${Environment} - Over 90% of ${Volume} volume space is in use'
+      AlarmActions:
+        - !Ref Warning
+      OKActions:
+        - !Ref Warning
+      MetricName: disk_used_percent
+      Namespace: CWAgent
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 90
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+      - Name: device
+        Value: !Ref Volume
+      - Name: path
+        Value: !Ref Path
+      - Name: fstype
+        Value: !Ref FS
+
+
+  DiskUsageCriticalAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: AppGroup
+    DeletionPolicy: Retain
+    Properties:
+      AlarmDescription: !Sub '${Environment} - Over 95% of ${Volume} volume space is in use'
+      AlarmActions:
+        - !Ref Error
+      OKActions:
+        - !Ref Error
+      MetricName: disk_used_percent
+      Namespace: CWAgent
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: '95'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+      - Name: device
+        Value: !Ref Volume
+      - Name: path
+        Value: !Ref Path
+      - Name: fstype
+        Value: !Ref FS
+

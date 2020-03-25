@@ -8,6 +8,14 @@
     "ParameterValue": "0.0.0.0/0"
   },
   {
+    "ParameterKey": "AdminEmail",
+    "ParameterValue": "ehbraheem@gmail.com"
+  },
+  {
+    "ParameterKey": "AdminPhone",
+    "ParameterValue": "+44-808-117-6736"
+  },
+  {
     "ParameterKey": "BucketName",
     "ParameterValue": "ehbraheem-static-site"
   },
