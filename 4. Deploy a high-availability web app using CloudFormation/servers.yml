@@ -100,20 +100,36 @@ Resources:
       GroupDescription: Allow HTTP and SSH access to our servers
       VpcId: 
         Fn::ImportValue: !Sub ${Environment}-VPCID
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: !Ref InternetCIDR
-        - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: !Ref AdminIP
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 0
-          ToPort: 65535
-          CidrIp: !Ref InternetCIDR
+
+
+  AppSecGroupIngressAllowInboundSSHFromBastion:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AppSecGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref BastionSecurityGroup
+
+  
+  AppSecGroupIngressAllowInboundHTTPFromLoadBalancer:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AppSecGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref LBSecGroup
+
+
+  AppSecGroupEgressAllowOutboundHTTPToInternet:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AppSecGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      CidrIp: !Ref InternetCIDR
 
 
   LBSecGroup:
@@ -230,7 +246,6 @@ Resources:
                 command: "systemctl enable cfn-hup.service"
               02_start_cfn-hup:
                 command: "systemctl start cfn-hup.service"
-
     Properties:
       IamInstanceProfile: !Ref AppInstanceProfile
       UserData: 
@@ -264,10 +279,9 @@ Resources:
           qs_status;
           # [ $(qs_status) == 0 ] && cfn_success || cfn_fail "signaled"
           cfn_success
-
       ImageId: ami-0edf3b95e26a682df
       KeyName: !Ref KeyPairName
-      InstanceType: t3.medium
+      InstanceType: t2.nano
       SecurityGroups:
         - !Ref AppSecGroup
       BlockDeviceMappings:
@@ -280,7 +294,7 @@ Resources:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier:
-        - Fn::ImportValue: !Sub ${Environment}-PUB-NETS
+        - Fn::ImportValue: !Sub ${Environment}-PRI-NETS
       DesiredCapacity: 4
       MinSize: 4
       MaxSize: 7
@@ -382,20 +396,22 @@ Resources:
                   - s3:GetObject
                 Resource:
                   - !Sub 'arn:aws:s3:::${BucketName}${BucketKeyPrefix}*'
-
   
+
   AppInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles:
         - !Ref S3Role
   
+
   ServerQueue:
     Type: AWS::SQS::Queue
     Properties:
       ReceiveMessageWaitTimeSeconds: 20
       VisibilityTimeout: 60
       QueueName: !Join [ '-', [ !Sub '${Environment}', 'Queue']]
+
 
   Warning:
     Type: AWS::SNS::Topic
@@ -408,6 +424,7 @@ Resources:
           Protocol: sqs
       TopicName: !Sub ${Environment}-Warning
 
+
   Error:
     Type: AWS::SNS::Topic
     Properties: 
@@ -416,6 +433,7 @@ Resources:
         - Endpoint: !Ref AdminPhone
           Protocol: sms
       TopicName: !Sub ${Environment}-Error
+
 
   SNSToQueuePolicy:
     Type: AWS::SQS::QueuePolicy
@@ -436,12 +454,72 @@ Resources:
                 aws:SourceArn: !Ref Warning
       Queues:
         - !Ref ServerQueue
+
+
+
+# -------------------- Bastion Host -------------------- #
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP and SSH access to our BastionHost
+      VpcId: 
+        Fn::ImportValue: !Sub ${Environment}-VPCID
+      
+
+  BastionSecurityGroupEggressAllowInboundSSHFromAdminIP:
+      Type: AWS::EC2::SecurityGroupIngress
+      Properties:
+        GroupId: !Ref BastionSecurityGroup
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: !Ref AdminIP
+
+
+  BastionSecurityGroupEgressAllowOutboundSSHToApplications:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref BastionSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      DestinationSecurityGroupId: !Ref AppSecGroup
+
+
+  BastionHost1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0edf3b95e26a682df
+      KeyName: !Ref KeyPairName
+      InstanceType: t2.nano
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      SubnetId: 
+        Fn::ImportValue: !Sub ${Environment}-PUB1-SN
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment} BastionHost for Public Subnet (AZ1)
+
+  
+  BastionHost2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0edf3b95e26a682df
+      KeyName: !Ref KeyPairName
+      InstanceType: t2.nano
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      SubnetId: 
+        Fn::ImportValue: !Sub ${Environment}-PUB2-SN
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment} BastionHost for Public Subnet (AZ2)
+
+
            
 
 
-
-
-# ------------------- CloudWatch ----------------------#
+# ------------------- CloudWatch ---------------------- #
   CPUCriticalAlarm:
     Type: AWS::CloudWatch::Alarm
     DeletionPolicy: Retain
@@ -588,3 +666,19 @@ Resources:
       - Name: fstype
         Value: !Ref FS
 
+
+
+
+# ------------- Outputs ----------- #
+Outputs:
+  BastionHost1PublicIp:
+    Description: 'Bastion Public IP'
+    Value: !Sub 'http://${BastionHost1.PublicIp}'
+    Export:
+      Name: BastionHost1PublicIp
+
+  BastionHost2PublicIp:
+    Description: 'Bastion Public IP'
+    Value: !Sub 'http://${BastionHost2.PublicIp}'
+    Export:
+      Name: BastionHost2PublicIp
