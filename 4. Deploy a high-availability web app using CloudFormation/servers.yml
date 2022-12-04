@@ -436,6 +436,8 @@ Resources:
           Protocol: email
         - Endpoint: !GetAtt ServerQueue.Arn
           Protocol: sqs
+        - Endpoint: !Ref AdminPhone
+          Protocol: sms
       TopicName: !Sub ${Environment}-Warning
 
 
@@ -545,7 +547,7 @@ Resources:
       OKActions:
         - !Ref Error
       EvaluationPeriods: 2
-      Threshold: 95
+      Threshold: 20
       ComparisonOperator: GreaterThanOrEqualToThreshold
       Statistic: Average
       MetricName: CPUUtilization
@@ -696,3 +698,9 @@ Outputs:
     Value: !Sub 'http://${BastionHost2.PublicIp}'
     Export:
       Name: BastionHost2PublicIp
+  
+  WebAppLoadBalancerURL:
+    Description: Public URL of the Load Balancer
+    Value: !Join [ "", [ 'http://', !GetAtt AppLB.DNSName ]]
+    Export:
+      Name: !Sub ${Environment}-LoadBalancer-URL
