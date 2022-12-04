@@ -57,6 +57,20 @@ Parameters:
       forward slash (/).
     Type: String
   
+  ImageAMI:
+    Description: Image AMI ID
+    Type: AWS::EC2::Image::Id
+    Default: ami-0edf3b95e26a682df
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - m1.small
+      - m1.large
+  
   Volume:
     Description: "Provide disk's/folder's name (ex.: xvda1)"
     AllowedPattern: '^[0-9a-zA-Z.]+([0-9a-zA-Z-]*[0-9a-zA-Z.])*$'
@@ -262,7 +276,7 @@ Resources:
             cfn-signal -e 0 --stack ${AWS::StackName} --region ${AWS::Region} --resource AppGroup
             exit 0
           }
-          S3URI=https://${BucketName}.${BucketRegion}.amazonaws.com/${BucketKeyPrefix}
+          S3URI=https://${BucketName}.${BucketRegion}.amazonaws.com${BucketKeyPrefix}
           apt-get -y update
           # Install git
           apt-get install -y git 
@@ -279,9 +293,9 @@ Resources:
           qs_status;
           # [ $(qs_status) == 0 ] && cfn_success || cfn_fail "signaled"
           cfn_success
-      ImageId: ami-0edf3b95e26a682df
+      ImageId: !Ref ImageAMI
       KeyName: !Ref KeyPairName
-      InstanceType: t2.nano
+      InstanceType: !Ref InstanceType
       SecurityGroups:
         - !Ref AppSecGroup
       BlockDeviceMappings:
@@ -489,9 +503,9 @@ Resources:
   BastionHost1:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: ami-0edf3b95e26a682df
+      ImageId: !Ref ImageAMI
       KeyName: !Ref KeyPairName
-      InstanceType: t2.nano
+      InstanceType: !Ref InstanceType
       SecurityGroupIds:
         - !Ref BastionSecurityGroup
       SubnetId: 
@@ -504,9 +518,9 @@ Resources:
   BastionHost2:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: ami-0edf3b95e26a682df
+      ImageId: !Ref ImageAMI
       KeyName: !Ref KeyPairName
-      InstanceType: t2.nano
+      InstanceType: !Ref InstanceType
       SecurityGroupIds:
         - !Ref BastionSecurityGroup
       SubnetId: 

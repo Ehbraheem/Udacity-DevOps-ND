@@ -13,22 +13,30 @@
   },
   {
     "ParameterKey": "AdminPhone",
-    "ParameterValue": "+44-808-117-6736"
+    "ParameterValue": "+2347066300068"
   },
   {
     "ParameterKey": "BucketName",
-    "ParameterValue": "ehbraheem-static-site"
+    "ParameterValue": "bolatan-static-site"
   },
   {
     "ParameterKey": "BucketRegion",
-    "ParameterValue": "eu-west-3"
+    "ParameterValue": "us-west-2"
   },
   {
     "ParameterKey": "SiteArchive",
-    "ParameterValue": "ehbraheem-static-site.tar.gz"
+    "ParameterValue": "site.tar.gz"
   },
   {
     "ParameterKey": "KeyPairName",
-    "ParameterValue": "ehbraheem-win"
+    "ParameterValue": "bolatan"
+  },
+  {
+    "ParameterKey": "ImageAMI",
+    "ParameterValue": "ami-0530ca8899fac469f"
+  },
+  {
+    "ParameterKey": "InstanceType",
+    "ParameterValue": "t2.micro"
   }
 ]
